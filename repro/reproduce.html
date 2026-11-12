@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dreamDEX Perps Repro</title>
+<style>
+  :root { --bg: #ffffff; --fg: #141a2e; --muted: #5d6784; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #0b1020; --fg: #e8ecf6; --muted: #9aa6c4; } }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 14px/1.5 system-ui, sans-serif; }
+  pre { white-space: pre-wrap; word-break: break-all; font: 12px/1.5 Consolas, monospace; }
+  p { color: var(--muted); }
+</style>
+</head>
+<body>
+<h1>dreamDEX perps feedback: live reproduction</h1>
+<p>Read-only. Uses <code>@somnia-chain/markets-sdk@0.32.1</code> against Hideki testnet (chain 50383). No wallet, no keys.</p>
+<pre id="out">running…</pre>
+<script type="module">
+import * as sdk from 'https://cdn.jsdelivr.net/npm/@somnia-chain/markets-sdk@0.32.1/+esm';
+import { hidekiTestnet } from 'https://cdn.jsdelivr.net/npm/@somnia-chain/markets-sdk@0.32.1/chains/+esm';
+
+const out = document.getElementById('out');
+const lines = [];
+const log = (s) => { lines.push(s); out.textContent = lines.join('\n'); };
+const DEAD = '0x000000000000000000000000000000000000dEaD';
+
+const markets = new sdk.SomniaMarkets({
+  chain: hidekiTestnet,
+  indexerUrl: 'https://hideki-dev.smk.somnia.host/v1/graphql',
+  addresses: sdk.SOMNIA_HIDEKI_TESTNET_ADDRESSES, // read-only: no privateKey
+});
+const now = Math.floor(Date.now() / 1000);
+const perps = await markets.client.listPerpMarkets();
+log(`listPerpMarkets(): ${perps.length} markets`);
+
+// 01: stale mark still priceable
+log('\n[01] getMaxPerpOrderSize vs mark price age');
+for (const sym of ['ADLT', 'ETH', 'BTC']) {
+  const m = perps.find((x) => x.baseSymbol === sym);
+  if (!m) continue;
+  const ageH = m.markPriceUpdatedAt ? ((now - Number(m.markPriceUpdatedAt)) / 3600).toFixed(1) : 'n/a';
+  const tick = BigInt(m.tickSize);
+  const price = m.markPrice && BigInt(m.markPrice) > 0n ? (BigInt(m.markPrice) / tick) * tick : tick;
+  const r = await markets.client.getMaxPerpOrderSize({ pool: m.poolAddress, marginBank: m.marginBank, account: DEAD, isBid: true, price });
+  log(`  ${sym}: markPriceUpdatedAt ${ageH} h ago -> priceable=${r.priceable} markPrice=${r.markPrice}`);
+}
+
+// 02: LOADTEST markets in the public list
+const lt = perps.filter((m) => m.baseSymbol === 'LOADTEST');
+log(`\n[02] LOADTEST markets returned: ${lt.length}`);
+lt.forEach((m) => log(`  ${m.poolAddress}`));
+
+// 03: markets missing from the docs' base-decimals table
+const documented = new Set(['ADA','HYPE','PUMP','XRP','XLM','BTC','DOGE','ZEC','SOL','SUI','TAO','1000PEPE','AVAX','BNB','ETH','LINK','LIT','VVV','WLD','ZRO','NEAR']);
+const missing = [...new Set(perps.map((m) => m.baseSymbol))].filter((s) => !documented.has(s));
+log(`\n[03] symbols not in the docs table: ${missing.join(', ')}`);
+
+// 04: walletAddress in read-only mode
+log(`\n[04] read-only markets.walletAddress = ${String(markets.walletAddress)}`);
+const btc = perps.find((m) => m.baseSymbol === 'BTC');
+const elig = await markets.client.getPerpVoucherEligibility(btc.marginBank, DEAD);
+log(`  getPerpVoucherEligibility(marginBank, explicit address) -> eligible=${elig.eligible}`);
+log('\ndone');
+</script>
+</body>
+</html>
