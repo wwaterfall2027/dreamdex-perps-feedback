@@ -61,6 +61,46 @@ log(`\n[04] read-only markets.walletAddress = ${String(markets.walletAddress)}`)
 const btc = perps.find((m) => m.baseSymbol === 'BTC');
 const elig = await markets.client.getPerpVoucherEligibility(btc.marginBank, DEAD);
 log(`  getPerpVoucherEligibility(marginBank, explicit address) -> eligible=${elig.eligible}`);
+// 05 + 06: docs market table vs getPerpRiskParams
+const docsTable = {
+  BTC: [20, '246.81545'], ETH: [20, '3995.6125'], HYPE: [20, '23812.72'], SOL: [20, '47654.44'], XRP: [20, '344632'],
+  ADA: [10, '2254678'], AVAX: [10, '66672.2'], BNB: [10, '693.975'], DOGE: [10, '5613590'], LINK: [10, '42643.6'],
+  NEAR: [10, '250410'], SUI: [10, '635009'], XLM: [10, '2677780'],
+  '1000PEPE': [5, '130285600'], LIT: [5, '138896.6'], PUMP: [5, '87993700'], TAO: [5, '2185.491'], VVV: [5, '21786.14'],
+  WLD: [5, '1264000'], ZEC: [5, '420'], ZRO: [5, '250599.5'],
+};
+log('\n[05] max leverage and margins: docs vs chain');
+log('[06] open interest cap and per-account cap: docs vs chain');
+let levDiff = 0, oiDiff = 0, tenth = 0;
+for (const [sym, [docLev, docOi]] of Object.entries(docsTable)) {
+  const m = perps.find((x) => x.baseSymbol === sym);
+  const rp = await markets.client.getPerpRiskParams(m.poolAddress);
+  const im = Number(rp.initialMarginBps), mm = Number(rp.maintenanceMarginBps);
+  const chainLev = 10000 / im;
+  const chainOi = Number(rp.maxOpenInterest) / 10 ** m.baseDecimals;
+  const share = Number(rp.maxPositionSize) / Number(rp.maxOpenInterest);
+  if (chainLev !== docLev) levDiff++;
+  if (Math.abs(chainOi - Number(docOi)) > 1e-9 * chainOi) oiDiff++;
+  if (Math.abs(share - 0.1) < 0.001) tenth++;
+  log(`  ${sym.padEnd(9)} docs ${docLev}x | chain ${chainLev}x (IM ${im / 100}% / MM ${mm / 100}%) | OI cap docs ${docOi} chain ${+chainOi.toPrecision(10)} | account cap ${(share * 100).toFixed(1)}% of OI`);
+}
+const sys = await markets.client.getPerpSystemConfig(btc.marginBank);
+log(`  -> leverage differs on ${levDiff}/21, OI cap differs on ${oiDiff}/21, account cap is a tenth on ${tenth}/21; maxLeverageLimit = ${sys.maxLeverageLimit}`);
+
+// 07: funding rate = premium + clamp(0.01% - premium, -0.05%, +0.05%)
+log('\n[07] funding rate vs premium');
+const live = perps.filter((m) => m.baseSymbol !== 'LOADTEST' && m.baseSymbol !== 'ADLT');
+const pct = (x) => Number(x) / 1e16; // 1e18 = 100%
+let fits = 0, longsPayBelow = [];
+for (const m of live) {
+  const st = await markets.client.getPerpState(m.poolAddress);
+  const p = pct(st.emaPremium), r = pct(st.fundingRate);
+  if (Math.abs(r - (p + Math.max(-0.05, Math.min(0.05, 0.01 - p)))) < 1e-9) fits++;
+  if (p < 0 && r > 0) longsPayBelow.push(`${m.baseSymbol} (premium ${p.toFixed(5)}%, rate +${r.toFixed(4)}%)`);
+}
+log(`  formula fits ${fits}/${live.length} markets`);
+log(`  negative premium but longs pay: ${longsPayBelow.length} markets`);
+longsPayBelow.forEach((s) => log(`    ${s}`));
 log('\ndone');
 </script>
 </body>
